@@ -13,13 +13,14 @@ reading. Today it is **bring-your-own-key**: the user pastes an OpenAI API key i
 Options, and every request goes straight from their browser to `api.openai.com`. There
 is no server.
 
-This backend exists for exactly one reason: **let a new user try Focal without an
-OpenAI account.** It holds *our* OpenAI key, meters a small free allowance per install,
+This backend exists for several reasons, but the most important one is: **let a new
+user try Focal without an OpenAI account.** It holds *our* OpenAI key, meters a small free allowance per install,
 and proxies requests to OpenAI. When the allowance runs out, the extension tells the
 user to add their own key and reverts to the direct path.
 
-That is the entire scope. It is not an account system, not an analytics platform, and
-not a general API.
+That is the scope of this first version. It is not an account system, not an analytics
+platform, and not a general API — but the backend will grow to serve other needs over
+time.
 
 ---
 
@@ -107,20 +108,14 @@ obscurely.
 
 ---
 
-## 5. Open product decision — resolve before building
+## 5. Product decision — unified quota (resolved)
 
-**Should Validate be in the free tier?**
+**All modes are free, with a single shared counter of 20 requests.** Validate costs more
+per call (web search billing), but it's the product's differentiator and best demo —
+gating it hides the reason to install Focal. After 20 requests of any kind, the user is
+prompted to add their own API key or upgrade to a premium tier.
 
-- **Argument for excluding it:** Explain on `gpt-4o-mini` costs roughly $0.001. Validate
-  with web search is 10–15× that. Twenty free Validates costs meaningfully more than
-  twenty free Explains, and "bring your own key to unlock fact-checking with cited
-  sources" is a clean upgrade prompt.
-- **Argument for including it:** Validate is the product's differentiator and its best
-  demo. Gating it means the free tier hides the reason to install Focal.
-
-**Recommended:** free tier covers Explain and Summarize; Validate requires a user key.
-Implement the quota so this is a **configuration value, not a code change** — the
-decision may well be reversed after seeing real usage.
+The limit is a runtime-configurable value, not a code change.
 
 ---
 
@@ -145,12 +140,16 @@ with a stable machine-readable `code` (see §6.5).
 
 ### 6.2 Quota check — in this order, before spending anything
 
-1. **Global daily spend cap.** If today's spend is at or over the ceiling, refuse with
-   `service_paused`. Check this *first* — it is the control that actually protects us.
-2. **Mode allowed on the free tier?** If not, refuse with `mode_requires_key`.
+1. **Kill switch.** If enabled, refuse with `service_paused`.
+2. **Global daily spend cap.** If today's spend is at or over the ceiling, refuse with
+   `service_paused`. Check this *first after the kill switch* — it is the control that
+   actually protects us.
 3. **Per-install quota.** Look up `install_id`. Create the row on first sight with the
-   default allowance. If remaining is zero, refuse with `quota_exhausted`.
-4. **Reserve** the request, proxy to OpenAI, then record actual usage.
+   default allowance (20). If `requests_used >= requests_limit`, refuse with
+   `quota_exhausted`.
+4. **Rate limit.** If too many requests in the last minute, refuse with `rate_limited`.
+5. **Reserve** the request (increment the relevant counter), proxy to OpenAI, then record
+   actual usage.
 
 ### 6.3 Accounting
 
@@ -165,8 +164,8 @@ with a stable machine-readable `code` (see §6.5).
 ### 6.4 Quota visibility
 
 The extension must be able to show remaining allowance without making a billable call.
-Either a lightweight `GET` endpoint, or return the remaining count in a header on every
-proxied response. **Prefer the header** — no extra round trip, no extra endpoint.
+Return the remaining count in a header on every proxied response — no extra round trip,
+no extra endpoint: `X-Quota-Remaining`.
 
 ### 6.5 Error contract
 
@@ -176,7 +175,7 @@ stable `code`; the extension owns the user-facing wording.
 | `code` | Meaning | What the extension does |
 |---|---|---|
 | `quota_exhausted` | Free allowance used up | Prompt to add own API key |
-| `mode_requires_key` | Mode not free (e.g. Validate) | Explain that this feature needs a key |
+| `mode_requires_key` | Mode not on free tier (reserved for future use) | Explain that this feature needs a key |
 | `service_paused` | Global cap hit | "Free tier is temporarily unavailable — add your own key" |
 | `rate_limited` | Too many requests too fast | Ask to retry shortly |
 | `upstream_error` | OpenAI returned an error | Surface a sanitised message |
@@ -205,8 +204,8 @@ stored).
 |---|---|---|
 | `install_id` | uuid, PK | client-generated |
 | `created_at` | timestamptz | |
-| `requests_used` | int | |
-| `requests_limit` | int | default from config, per-row so it can be raised |
+| `requests_used` | int | all modes share one counter |
+| `requests_limit` | int | default 20, per-row so it can be raised |
 | `last_seen_at` | timestamptz | |
 | `first_seen_ip_hash` | text, nullable | **hashed**, for abuse visibility only, never enforced |
 
@@ -243,12 +242,11 @@ All of these are runtime configuration, not constants in code:
 
 | Setting | Suggested default | Why configurable |
 |---|---|---|
-| Free requests per install | 20 | Will be tuned on real data |
-| Modes free | `explain`, `summarize` | §5 may be reversed |
-| Global daily spend cap (USD) | Set deliberately — start low | The core safety control |
-| Alert threshold | 50% and 80% of cap | |
-| Per-install rate limit | e.g. 10/min | Stops runaway loops |
+| Free requests per install | 20 | All modes share one counter |
+| Global daily spend cap (USD) | $3 | The core safety control |
+| Per-install rate limit | 10/min | Stops runaway loops |
 | Model | `gpt-4o-mini` | |
+| Kill switch | `false` | Disables free tier instantly, no deploy |
 
 ---
 
