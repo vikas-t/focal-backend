@@ -28,14 +28,22 @@ export async function recordUsage(
   mode: string,
   usage: UsageInfo | null,
   status: "ok" | "upstream_error",
+  reservedCost: number,
 ): Promise<void> {
-  const cost = estimateCost(mode, usage);
+  const actualCost = estimateCost(mode, usage);
   await db.from("usage_events").insert({
     install_id: installId,
     mode,
     prompt_tokens: usage?.prompt_tokens ?? null,
     completion_tokens: usage?.completion_tokens ?? null,
-    estimated_cost_usd: cost,
+    estimated_cost_usd: actualCost,
     status,
   });
+  // Reconcile the pre-reserved spend with actual cost
+  if (reservedCost !== actualCost) {
+    await db.rpc("reconcile_daily_spend", {
+      p_reserved: reservedCost,
+      p_actual: actualCost,
+    });
+  }
 }

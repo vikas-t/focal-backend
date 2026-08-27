@@ -13,6 +13,7 @@ Deno.test("loadConfig — returns values from database", async () => {
           { key: "rate_limit_per_minute", value: 5 },
           { key: "model", value: "gpt-4o" },
           { key: "kill_switch", value: true },
+          { key: "free_modes", value: ["explain"] },
         ],
       },
     },
@@ -24,6 +25,7 @@ Deno.test("loadConfig — returns values from database", async () => {
   assertEquals(config.rate_limit_per_minute, 5);
   assertEquals(config.model, "gpt-4o");
   assertEquals(config.kill_switch, true);
+  assertEquals(config.free_modes, ["explain"]);
 });
 
 Deno.test("loadConfig — returns defaults on error", async () => {
@@ -37,6 +39,7 @@ Deno.test("loadConfig — returns defaults on error", async () => {
   assertEquals(config.free_requests_per_install, 20);
   assertEquals(config.daily_spend_cap_usd, 3.0);
   assertEquals(config.kill_switch, false);
+  assertEquals(config.free_modes, ["explain", "summarize", "worth_reading"]);
 });
 
 Deno.test("loadConfig — ignores unknown keys", async () => {
@@ -71,4 +74,5 @@ Deno.test("loadConfig — partial config merges with defaults", async () => {
   assertEquals(config.kill_switch, true);
   assertEquals(config.free_requests_per_install, 20);
   assertEquals(config.model, "gpt-4o-mini");
+  assertEquals(config.free_modes, ["explain", "summarize", "worth_reading"]);
 });

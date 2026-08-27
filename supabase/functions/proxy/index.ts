@@ -50,7 +50,6 @@ Deno.serve(async (req) => {
     return errorResponse("bad_request", "Method not allowed", corsHeaders());
   }
 
-  // Parse request
   let body: ProxyRequest;
   try {
     body = await req.json();
@@ -70,7 +69,6 @@ Deno.serve(async (req) => {
     return errorResponse("bad_request", "Missing payload", corsHeaders());
   }
 
-  // Reject PDFs — too large for free-tier Edge Function memory
   if (containsPdf(payload)) {
     return errorResponse(
       "bad_request",
@@ -79,7 +77,6 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Supabase client (service role — bypasses RLS)
   const db = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -87,14 +84,16 @@ Deno.serve(async (req) => {
 
   const config = await loadConfig(db);
 
-  // IP hash for abuse visibility
   const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const ipHash = clientIp ? await hashIp(clientIp) : null;
 
-  // Quota pipeline
-  const quota = await checkQuota(db, config, install_id, ipHash);
+  const quota = await checkQuota(db, config, install_id, mode, ipHash);
   if (!quota.ok) {
-    return errorResponse(quota.code, quota.message, corsHeaders());
+    const refusalHeaders: Record<string, string> = { ...corsHeaders() };
+    if (quota.remaining !== undefined) {
+      refusalHeaders["X-Quota-Remaining"] = String(quota.remaining);
+    }
+    return errorResponse(quota.code, quota.message, refusalHeaders);
   }
 
   const quotaHeaders: Record<string, string> = {
@@ -104,7 +103,6 @@ Deno.serve(async (req) => {
     ),
   };
 
-  // Override model to prevent client from choosing expensive models
   payload.model = config.model;
 
   const apiKey = Deno.env.get("OPENAI_API_KEY")!;
@@ -112,22 +110,22 @@ Deno.serve(async (req) => {
   const logBase = { install_id, mode, ts: new Date().toISOString() };
   const isStreaming = payload.stream === true;
   const isResponsesApi = RESPONSES_API_MODES.has(mode);
+  const reservedCost = quota.reservedCost;
 
   if (isStreaming) {
     try {
       const { stream, usage } = proxyStreaming(apiKey, payload);
 
-      // Record usage after stream ends (fire-and-forget)
       usage.then(async (u) => {
         console.log(JSON.stringify({
           ...logBase, status: "ok", latency_ms: Date.now() - startTime, ...u,
         }));
-        await recordUsage(db, install_id, mode, u, "ok");
+        await recordUsage(db, install_id, mode, u, "ok", reservedCost);
       }).catch(async () => {
         console.log(JSON.stringify({
           ...logBase, status: "upstream_error", latency_ms: Date.now() - startTime,
         }));
-        await recordUsage(db, install_id, mode, null, "upstream_error");
+        await recordUsage(db, install_id, mode, null, "upstream_error", reservedCost);
       });
 
       return new Response(stream, {
@@ -139,12 +137,11 @@ Deno.serve(async (req) => {
       });
     } catch {
       console.log(JSON.stringify({ ...logBase, status: "upstream_error" }));
-      await recordUsage(db, install_id, mode, null, "upstream_error");
+      await recordUsage(db, install_id, mode, null, "upstream_error", reservedCost);
       return errorResponse("upstream_error", "Failed to process request", quotaHeaders);
     }
   }
 
-  // Non-streaming path
   try {
     const { body: responseBody, usage } = await proxyNonStreaming(
       apiKey,
@@ -159,7 +156,7 @@ Deno.serve(async (req) => {
       prompt_tokens: usage.prompt_tokens,
       completion_tokens: usage.completion_tokens,
     }));
-    await recordUsage(db, install_id, mode, usage, "ok");
+    await recordUsage(db, install_id, mode, usage, "ok", reservedCost);
 
     return new Response(JSON.stringify(responseBody), {
       headers: { "content-type": "application/json", ...quotaHeaders },
@@ -168,7 +165,7 @@ Deno.serve(async (req) => {
     console.log(JSON.stringify({
       ...logBase, status: "upstream_error", latency_ms: Date.now() - startTime,
     }));
-    await recordUsage(db, install_id, mode, null, "upstream_error");
+    await recordUsage(db, install_id, mode, null, "upstream_error", reservedCost);
     return errorResponse("upstream_error", "Failed to process request", quotaHeaders);
   }
 });

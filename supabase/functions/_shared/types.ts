@@ -18,6 +18,7 @@ export interface AppConfig {
   rate_limit_per_minute: number;
   model: string;
   kill_switch: boolean;
+  free_modes: string[];
 }
 
 export interface UsageInfo {

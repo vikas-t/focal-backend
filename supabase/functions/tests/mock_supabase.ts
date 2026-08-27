@@ -107,12 +107,18 @@ export function defaultConfig(): MockConfig {
       daily_spend: { rows: [] },
       installs: { rows: [] },
       usage_events: { rows: [], count: 0 },
-      "rpc:upsert_install": {
+      "rpc:consume_quota": {
         rpcResult: {
           install_id: "550e8400-e29b-41d4-a716-446655440000",
-          requests_used: 0,
+          requests_used: 1,
           requests_limit: 20,
         },
+      },
+      "rpc:reserve_daily_spend": {
+        rpcResult: 0.002,
+      },
+      "rpc:reconcile_daily_spend": {
+        rpcResult: null,
       },
     },
   };

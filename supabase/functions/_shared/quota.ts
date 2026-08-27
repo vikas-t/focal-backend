@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AppConfig } from "./types.ts";
+import { estimateCost } from "./accounting.ts";
 
 interface Install {
   install_id: string;
@@ -8,13 +9,14 @@ interface Install {
 }
 
 export type QuotaResult =
-  | { ok: true; install: Install }
-  | { ok: false; code: "service_paused" | "quota_exhausted" | "rate_limited"; message: string };
+  | { ok: true; install: Install; reservedCost: number }
+  | { ok: false; code: "service_paused" | "quota_exhausted" | "rate_limited" | "mode_requires_key"; message: string; remaining?: number };
 
 export async function checkQuota(
   db: SupabaseClient,
   config: AppConfig,
   installId: string,
+  mode: string,
   ipHash: string | null,
 ): Promise<QuotaResult> {
   // 1. Kill switch
@@ -22,37 +24,12 @@ export async function checkQuota(
     return { ok: false, code: "service_paused", message: "Free tier is temporarily unavailable." };
   }
 
-  // 2. Global daily spend cap
-  const today = new Date().toISOString().slice(0, 10);
-  const { data: spendRow } = await db
-    .from("daily_spend")
-    .select("total_usd")
-    .eq("day", today)
-    .maybeSingle();
-
-  if (spendRow && Number(spendRow.total_usd) >= config.daily_spend_cap_usd) {
-    return { ok: false, code: "service_paused", message: "Free tier is temporarily unavailable." };
+  // 2. Mode gating
+  if (!config.free_modes.includes(mode)) {
+    return { ok: false, code: "mode_requires_key", message: "This feature requires your own OpenAI API key." };
   }
 
-  // 3. Upsert install (create on first sight, update last_seen on return visit)
-  const { data: install, error: upsertErr } = await db.rpc("upsert_install", {
-    p_install_id: installId,
-    p_requests_limit: config.free_requests_per_install,
-    p_ip_hash: ipHash,
-  });
-
-  if (upsertErr || !install) {
-    return { ok: false, code: "service_paused", message: "Internal error." };
-  }
-
-  const inst = install as Install;
-
-  // 4. Quota check
-  if (inst.requests_used >= inst.requests_limit) {
-    return { ok: false, code: "quota_exhausted", message: "Free request allowance used up." };
-  }
-
-  // 5. Rate limit
+  // 3. Rate limit (checked before quota/spend so we don't consume then roll back)
   const { count } = await db
     .from("usage_events")
     .select("id", { count: "exact", head: true })
@@ -63,17 +40,48 @@ export async function checkQuota(
     return { ok: false, code: "rate_limited", message: "Too many requests. Try again shortly." };
   }
 
-  // 6. Reserve the request (increment before calling OpenAI — no refund on failure)
-  await db
-    .from("installs")
-    .update({
-      requests_used: inst.requests_used + 1,
-      last_seen_at: new Date().toISOString(),
-    })
-    .eq("install_id", installId);
+  // 4. Atomic daily spend reservation (estimate before calling OpenAI)
+  const estimatedCost = estimateCost(mode, null);
+  const { data: newTotal, error: spendErr } = await db.rpc("reserve_daily_spend", {
+    p_estimated_cost: estimatedCost,
+    p_cap: config.daily_spend_cap_usd,
+  });
+
+  if (spendErr) {
+    return { ok: false, code: "service_paused", message: "Internal error." };
+  }
+  if (newTotal === null) {
+    return { ok: false, code: "service_paused", message: "Free tier is temporarily unavailable." };
+  }
+
+  // 5. Atomic quota check-and-increment
+  const { data: install, error: consumeErr } = await db.rpc("consume_quota", {
+    p_install_id: installId,
+    p_requests_limit: config.free_requests_per_install,
+    p_ip_hash: ipHash,
+  });
+
+  if (consumeErr) {
+    await rollbackSpend(db, estimatedCost);
+    return { ok: false, code: "service_paused", message: "Internal error." };
+  }
+
+  const inst = install as Install;
+  if (!inst?.install_id) {
+    await rollbackSpend(db, estimatedCost);
+    return { ok: false, code: "quota_exhausted", message: "Free request allowance used up.", remaining: 0 };
+  }
 
   return {
     ok: true,
-    install: { ...inst, requests_used: inst.requests_used + 1 },
+    install: inst,
+    reservedCost: estimatedCost,
   };
+}
+
+async function rollbackSpend(db: SupabaseClient, amount: number): Promise<void> {
+  await db.rpc("reconcile_daily_spend", {
+    p_reserved: amount,
+    p_actual: 0,
+  });
 }
