@@ -15,7 +15,7 @@ function corsHeaders(): Record<string, string> {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "POST, OPTIONS",
     "access-control-allow-headers": "content-type, authorization",
-    "access-control-expose-headers": "X-Quota-Remaining",
+    "access-control-expose-headers": "X-Quota-Remaining, X-Validates-Remaining",
   };
 }
 
@@ -100,6 +100,9 @@ Deno.serve(async (req) => {
     ...corsHeaders(),
     "X-Quota-Remaining": String(
       Math.max(0, quota.install.requests_limit - quota.install.requests_used),
+    ),
+    "X-Validates-Remaining": String(
+      Math.max(0, quota.install.validates_limit - quota.install.validates_used),
     ),
   };
 

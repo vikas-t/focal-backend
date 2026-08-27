@@ -19,6 +19,7 @@ export interface AppConfig {
   model: string;
   kill_switch: boolean;
   free_modes: string[];
+  free_validates_per_install: number;
 }
 
 export interface UsageInfo {

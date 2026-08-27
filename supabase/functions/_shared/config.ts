@@ -7,7 +7,8 @@ const DEFAULTS: AppConfig = {
   rate_limit_per_minute: 10,
   model: "gpt-4o-mini",
   kill_switch: false,
-  free_modes: ["explain", "summarize", "worth_reading"],
+  free_modes: ["explain", "summarize", "worth_reading", "validate"],
+  free_validates_per_install: 5,
 };
 
 export async function loadConfig(db: SupabaseClient): Promise<AppConfig> {

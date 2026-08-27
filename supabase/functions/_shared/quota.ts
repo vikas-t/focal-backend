@@ -6,6 +6,8 @@ interface Install {
   install_id: string;
   requests_used: number;
   requests_limit: number;
+  validates_used: number;
+  validates_limit: number;
 }
 
 export type QuotaResult =
@@ -19,17 +21,14 @@ export async function checkQuota(
   mode: string,
   ipHash: string | null,
 ): Promise<QuotaResult> {
-  // 1. Kill switch
   if (config.kill_switch) {
     return { ok: false, code: "service_paused", message: "Free tier is temporarily unavailable." };
   }
 
-  // 2. Mode gating
   if (!config.free_modes.includes(mode)) {
     return { ok: false, code: "mode_requires_key", message: "This feature requires your own OpenAI API key." };
   }
 
-  // 3. Rate limit (checked before quota/spend so we don't consume then roll back)
   const { count } = await db
     .from("usage_events")
     .select("id", { count: "exact", head: true })
@@ -40,7 +39,6 @@ export async function checkQuota(
     return { ok: false, code: "rate_limited", message: "Too many requests. Try again shortly." };
   }
 
-  // 4. Atomic daily spend reservation (estimate before calling OpenAI)
   const estimatedCost = estimateCost(mode, null);
   const { data: newTotal, error: spendErr } = await db.rpc("reserve_daily_spend", {
     p_estimated_cost: estimatedCost,
@@ -54,12 +52,13 @@ export async function checkQuota(
     return { ok: false, code: "service_paused", message: "Free tier is temporarily unavailable." };
   }
 
-  // 5. Atomic quota check-and-increment
-  const { data: install, error: consumeErr } = await db.rpc("consume_quota", {
-    p_install_id: installId,
-    p_requests_limit: config.free_requests_per_install,
-    p_ip_hash: ipHash,
-  });
+  const isValidate = mode === "validate";
+  const rpcName = isValidate ? "consume_validate_quota" : "consume_quota";
+  const rpcParams = isValidate
+    ? { p_install_id: installId, p_validates_limit: config.free_validates_per_install, p_ip_hash: ipHash }
+    : { p_install_id: installId, p_requests_limit: config.free_requests_per_install, p_ip_hash: ipHash };
+
+  const { data: install, error: consumeErr } = await db.rpc(rpcName, rpcParams);
 
   if (consumeErr) {
     await rollbackSpend(db, estimatedCost);
@@ -69,7 +68,10 @@ export async function checkQuota(
   const inst = install as Install;
   if (!inst?.install_id) {
     await rollbackSpend(db, estimatedCost);
-    return { ok: false, code: "quota_exhausted", message: "Free request allowance used up.", remaining: 0 };
+    const msg = isValidate
+      ? "Free validation allowance used up. Add your own OpenAI API key to keep using Validate."
+      : "Free request allowance used up.";
+    return { ok: false, code: "quota_exhausted", message: msg, remaining: 0 };
   }
 
   return {

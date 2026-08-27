@@ -112,6 +112,17 @@ export function defaultConfig(): MockConfig {
           install_id: "550e8400-e29b-41d4-a716-446655440000",
           requests_used: 1,
           requests_limit: 20,
+          validates_used: 0,
+          validates_limit: 5,
+        },
+      },
+      "rpc:consume_validate_quota": {
+        rpcResult: {
+          install_id: "550e8400-e29b-41d4-a716-446655440000",
+          requests_used: 0,
+          requests_limit: 20,
+          validates_used: 1,
+          validates_limit: 5,
         },
       },
       "rpc:reserve_daily_spend": {
