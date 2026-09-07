@@ -407,7 +407,12 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 
 [functions.proxy]
 enabled = true
-verify_jwt = true
+# The extension calls this endpoint with no Supabase auth header — identity is a
+# client-generated install UUID in the request body, not a JWT, because the
+# product has no accounts (see REQUIREMENTS.md §2.1). With verify_jwt on, every
+# request is rejected at the gateway before reaching our code, and the client
+# sees an opaque service_paused.
+verify_jwt = false
 import_map = "./functions/proxy/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
